@@ -12,8 +12,9 @@
   "description": "",
   "dependencies": {
     "cors": "^2.8.5",
-    "exceljs": "^4.4.0",
+    "dotenv": "^16.6.0",
     "express": "^5.1.0",
+    "mongoose": "^8.16.1",
     "xlsx-populate": "^1.21.0"
   },
   "devDependencies": {
