@@ -1,85 +1,158 @@
 import express from 'express';
 import cors from 'cors';
-import ExcelJS from 'exceljs';
-import path from 'node:path';
-import fs from 'node:fs';
+import mongoose from 'mongoose';
+import dotenv from 'dotenv';
+import compression from 'compression';
+import axios from 'axios';
 
-const PORT = 2222;
+dotenv.config();
 
 const app = express();
+const PORT = process.env.PORT || 2222;
+
+// Configuración optimizada de MongoDB
+const MONGO_OPTIONS = {
+  connectTimeoutMS: 30000,
+  socketTimeoutMS: 45000,
+  maxPoolSize: 50,
+};
+
+// Middlewares 
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: '10kb' }));
+app.use(compression()); 
 
-// Endpoint para verificar que el servidor funciona
-app.get('/', (req, res) => {
-  res.send('Servidor funcionando correctamente 🚀');
-});
+// Esquema optimizado con índices
+const alumnoSchema = new mongoose.Schema(
+  {
+    apellido1: { type: String, lowercase: true, trim: true, index: true },
+    apellido2: { type: String, lowercase: true, trim: true, index: true },
+    nombre1: { type: String, lowercase: true, trim: true, index: true },
+    codigo: { type: String, index: true },
+  },
+  { strict: false, timestamps: true },
+);
 
-// Ruta del archivo Excel
-const filePath = path.resolve('public', 'alumnos.xlsx');
+const Alumno = mongoose.model('Alumno', alumnoSchema);
 
-// Función para cargar y convertir el Excel en JSON
-async function loadExcelData() {
-  try {
-    if (!fs.existsSync(filePath)) {
-      console.error(`❌ Archivo no encontrado en: ${filePath}`);
-      return [];
+// Conexión optimizada a MongoDB
+mongoose
+  .connect(process.env.MONGO_URI, MONGO_OPTIONS)
+  .then(() => {
+    console.log('✅ Conectado a MongoDB');
+    // Crear índices después de conectar
+    Alumno.createIndexes()
+      .then(() => console.log('🔍 Índices creados/verificados'))
+      .catch((err) => console.error('⚠️ Error creando índices:', err.message));
+  })
+  .catch((err) => {
+    console.error('❌ Error de conexión:', err.message);
+    process.exit(1);
+  });
+
+// Función keep-alive
+function startKeepAlive() {
+  const url = process.env.RENDER_URL || `http://localhost:${PORT}`;
+
+  const pingServer = async () => {
+    try {
+      await axios.get(url);
+      console.log(`🔄 Keep-alive ping a ${new Date().toLocaleTimeString()}`);
+    } catch (error) {
+      console.error('⚠️ Error en keep-alive:', error.message);
     }
+  };
 
-    const workbook = new ExcelJS.Workbook();
-    await workbook.xlsx.readFile(filePath);
-    const worksheet = workbook.worksheets[0]; // Obtener la primera hoja
-
-    // Convertir las filas en un array de objetos tipo JSON
-    const data = [];
-    const headers = worksheet.getRow(1).values.map((h) => h?.toString().trim().toLowerCase());
-
-    worksheet.eachRow((row, rowNumber) => {
-      if (rowNumber === 1) return; // Saltar la cabecera
-
-      const rowData = row.values.map((val) => (val ? val.toString().trim().toLowerCase() : ''));
-      const obj = {};
-
-      headers.forEach((header, index) => {
-        obj[header] = rowData[index];
-      });
-
-      data.push(obj);
-    });
-
-    return data;
-  } catch (error) {
-    console.error('❌ Error al leer el archivo Excel:', error);
-    return [];
-  }
+  // Ejecutar inmediatamente y luego cada 5 minutos
+  pingServer();
+  setInterval(pingServer, 9 * 60 * 1000);
 }
 
-// Endpoint para buscar el código del estudiante
+// Iniciar keep-alive si está en producción
+if (process.env.NODE_ENV === 'production') {
+  startKeepAlive();
+}
+
+// Ruta de prueba optimizada
+app.get('/', (req, res) => {
+  res.status(200).json({
+    status: 'success',
+    message: 'Servidor funcionando correctamente 🚀',
+    timestamp: new Date(),
+  });
+});
+
+// Buscar código optimizado
 app.post('/buscar-codigo', async (req, res) => {
   console.log('🔍 Petición recibida:', req.body);
   const { apellido1, apellido2, nombre1 } = req.body;
 
+  // Validación de entrada
+  if (!apellido1 || !apellido2 || !nombre1) {
+    return res.status(400).json({
+      status: 'fail',
+      error: 'Datos incompletos',
+      required: ['apellido1', 'apellido2', 'nombre1'],
+    });
+  }
+
   try {
-    const worksheet = await loadExcelData();
+    const query = {
+      apellido1: apellido1.trim().toLowerCase(),
+      apellido2: apellido2.trim().toLowerCase(),
+      nombre1: nombre1.trim().toLowerCase(),
+    };
 
-    const estudiante = worksheet.find(
-      (row) =>
-        row['apellido1'] === apellido1.trim().toLowerCase() &&
-        row['apellido2'] === apellido2.trim().toLowerCase() &&
-        row['nombre1'] === nombre1.trim().toLowerCase(),
-    );
+    const alumno = await Alumno.findOne(query)
+      .select('codigo')
+      .lean() 
+      .maxTimeMS(5000); // Timeout de 5 segundos
 
-    if (estudiante) {
-      return res.status(200).json({ codigo: estudiante['codigo'] });
-    } else {
-      return res.status(404).json({ error: 'Estudiante no encontrado' });
+    if (!alumno) {
+      return res.status(404).json({
+        status: 'fail',
+        error: 'Estudiante no encontrado',
+      });
     }
+
+    res.status(200).json({
+      status: 'success',
+      data: { codigo: alumno.codigo },
+    });
   } catch (error) {
-    return res.status(500).json({ error: 'Error al procesar la solicitud' });
+    console.error('❌ Error al buscar:', error);
+    res.status(500).json({
+      status: 'error',
+      error: 'Error interno del servidor',
+      message: error.message,
+    });
   }
 });
 
-// Iniciar el servidor
-app.listen(PORT, () => {
-  console.log(`✅ Servidor corriendo en http://localhost:${PORT}`);
+// Manejador de errores global
+app.use((err, req, res, next) => {
+  console.error('🔥 Error no manejado:', err);
+  res.status(500).json({
+    status: 'error',
+    error: 'Error interno del servidor',
+  });
+});
+
+// Iniciar servidor optimizado
+const server = app.listen(PORT, () => {
+  console.log(`🚀 Servidor corriendo en http://localhost:${PORT}`);
+});
+
+// Manejo de cierre limpio
+process.on('SIGTERM', () => {
+  console.log('🛑 Recibido SIGTERM. Cerrando servidor...');
+  server.close(() => {
+    console.log('🔴 Servidor cerrado');
+    process.exit(0);
+  });
+});
+
+process.on('unhandledRejection', (err) => {
+  console.error('🔥 Unhandled Rejection:', err);
+  server.close(() => process.exit(1));
 });
